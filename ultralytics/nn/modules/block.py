@@ -17,6 +17,7 @@ __all__ = (
     "HGBlock",
     "HGStem",
     "SPP",
+    "GAMBlock",
     "SPPF",
     "C1",
     "C2",
@@ -211,6 +212,62 @@ class SPP(nn.Module):
         """Forward pass of the SPP layer, performing spatial pyramid pooling."""
         x = self.cv1(x)
         return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
+
+
+class GAMBlock(nn.Module):
+    """
+    Global Attention Mechanism (GAM) block used in the Global Optimization Module (GOM) of GSO-YOLO.
+
+    This module enhances feature maps by sequentially applying:
+        - Channel attention: emphasizes important channels using a two-layer MLP.
+        - Spatial attention: emphasizes important spatial locations using convolutional fusion.
+
+    Reference:
+        Based on GAM [42] from the GSO-YOLO paper.
+
+    Args:
+        channels (int): Number of input/output channels.
+        reduction (int): Reduction ratio for the hidden layer in the channel attention MLP.
+    """
+
+    def __init__(self, channels: int, reduction: int = 16):
+        super().__init__()
+        # Channel Attention: Global average pooling + 2-layer MLP
+        self.channel_att = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),                          # [B, C, 1, 1]
+            nn.Conv2d(channels, channels // reduction, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1, bias=False),
+            nn.Sigmoid()
+        )
+
+        # Spatial Attention: Conv fusion of avg & max pooled features
+        self.spatial_att = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Apply channel and spatial attention to the input feature map.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape [B, C, H, W].
+
+        Returns:
+            torch.Tensor: Refined feature map after applying attention.
+        """
+        # Channel Attention
+        Mc = self.channel_att(x)
+        F2 = x * Mc
+
+        # Spatial Attention
+        avg_out = torch.mean(F2, dim=1, keepdim=True)
+        max_out, _ = torch.max(F2, dim=1, keepdim=True)
+        Ms = self.spatial_att(torch.cat([avg_out, max_out], dim=1))
+        F3 = F2 * Ms
+
+        return F3
 
 
 class SPPF(nn.Module):

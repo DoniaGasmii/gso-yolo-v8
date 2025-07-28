@@ -17,7 +17,7 @@ __all__ = (
     "HGBlock",
     "HGStem",
     "SPP",
-    "GAMBlock",
+    "GAM",
     "SPPF",
     "C1",
     "C2",
@@ -213,62 +213,59 @@ class SPP(nn.Module):
         x = self.cv1(x)
         return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
 
-
-class GAMBlock(nn.Module):
+class GAM(nn.Module):
     """
-    Global Attention Mechanism (GAM) block used in the Global Optimization Module (GOM) of GSO-YOLO.
+    Global Attention Mechanism (GAM) from the original paper:
+    'Global Attention Mechanism: Retain Information to Enhance Channel-Spatial Interactions'
+    https://arxiv.org/abs/2112.05561
 
-    This module enhances feature maps by sequentially applying:
-        - Channel attention: emphasizes important channels using a two-layer MLP.
-        - Spatial attention: emphasizes important spatial locations using convolutional fusion.
-
-    Reference:
-        Based on GAM [42] from the GSO-YOLO paper.
+    Applies channel and spatial attention sequentially:
+        - Channel attention via two fully connected layers.
+        - Spatial attention via two 7x7 convolutional layers with BatchNorm.
 
     Args:
-        channels (int): Number of input/output channels.
-        reduction (int): Reduction ratio for the hidden layer in the channel attention MLP.
+        in_channels (int): Number of input channels.
+        out_channels (int): Number of output channels.
+        rate (int): Reduction ratio.
     """
 
-    def __init__(self, channels: int, reduction: int = 16):
+    def __init__(self, in_channels, out_channels, rate=4):
         super().__init__()
-        # Channel Attention: Global average pooling + 2-layer MLP
-        self.channel_att = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),                          # [B, C, 1, 1]
-            nn.Conv2d(channels, channels // reduction, 1, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(channels // reduction, channels, 1, bias=False),
-            nn.Sigmoid()
-        )
+        in_channels = int(in_channels)
+        out_channels = int(out_channels)
+        mid_channels = in_channels // rate
 
-        # Spatial Attention: Conv fusion of avg & max pooled features
-        self.spatial_att = nn.Sequential(
-            nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False),
-            nn.Sigmoid()
-        )
+        # Channel attention (MLP)
+        self.linear1 = nn.Linear(in_channels, mid_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.linear2 = nn.Linear(mid_channels, in_channels)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Apply channel and spatial attention to the input feature map.
+        # Spatial attention (Conv-BN)
+        self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=7, padding=3, padding_mode='replicate')
+        self.conv2 = nn.Conv2d(mid_channels, out_channels, kernel_size=7, padding=3, padding_mode='replicate')
+        self.norm1 = nn.BatchNorm2d(mid_channels)
+        self.norm2 = nn.BatchNorm2d(out_channels)
+        self.sigmoid = nn.Sigmoid()
 
-        Args:
-            x (torch.Tensor): Input tensor of shape [B, C, H, W].
+    def forward(self, x):
+        b, c, h, w = x.shape
 
-        Returns:
-            torch.Tensor: Refined feature map after applying attention.
-        """
-        # Channel Attention
-        Mc = self.channel_att(x)
-        F2 = x * Mc
+        # Channel Attention: reshape to (B, H*W, C)
+        x_perm = x.permute(0, 2, 3, 1).view(b, -1, c)
+        x_mlp = self.linear2(self.relu(self.linear1(x_perm)))
+        x_att = x_mlp.view(b, h, w, c).permute(0, 3, 1, 2)
+
+        # Apply channel attention
+        x = x * x_att
 
         # Spatial Attention
-        avg_out = torch.mean(F2, dim=1, keepdim=True)
-        max_out, _ = torch.max(F2, dim=1, keepdim=True)
-        Ms = self.spatial_att(torch.cat([avg_out, max_out], dim=1))
-        F3 = F2 * Ms
+        s_att = self.relu(self.norm1(self.conv1(x)))
+        s_att = self.sigmoid(self.norm2(self.conv2(s_att)))
 
-        return F3
-
+        # Apply spatial attention
+        out = x * s_att
+        return out
+    
 
 class SPPF(nn.Module):
     """Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher."""

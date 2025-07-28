@@ -215,56 +215,40 @@ class SPP(nn.Module):
 
 class GAM(nn.Module):
     """
-    Global Attention Mechanism (GAM) from the original paper:
-    'Global Attention Mechanism: Retain Information to Enhance Channel-Spatial Interactions'
-    https://arxiv.org/abs/2112.05561
-
-    Applies channel and spatial attention sequentially:
-        - Channel attention via two fully connected layers.
-        - Spatial attention via two 7x7 convolutional layers with BatchNorm.
-
-    Args:
-        in_channels (int): Number of input channels.
-        out_channels (int): Number of output channels.
-        rate (int): Reduction ratio.
+    Global Attention Mechanism (GAM) module adapted for YOLOv8.
+    Works with any input feature map size and channel dimension.
     """
 
-    def __init__(self, in_channels, out_channels, rate=4):
+    def __init__(self, in_channels, out_channels=None, rate=4):
         super().__init__()
-        in_channels = int(in_channels)
-        out_channels = int(out_channels)
-        mid_channels = in_channels // rate
+        self.in_channels = int(in_channels)
+        self.out_channels = int(out_channels) if out_channels else self.in_channels
+        self.mid_channels = int(self.in_channels // rate)
 
-        # Channel attention (MLP)
-        self.linear1 = nn.Linear(in_channels, mid_channels)
+        # Channel Attention: Linear layers (MLP)
+        self.linear1 = nn.Linear(self.in_channels, self.mid_channels)
         self.relu = nn.ReLU(inplace=True)
-        self.linear2 = nn.Linear(mid_channels, in_channels)
+        self.linear2 = nn.Linear(self.mid_channels, self.in_channels)
 
-        # Spatial attention (Conv-BN)
-        self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=7, padding=3, padding_mode='replicate')
-        self.conv2 = nn.Conv2d(mid_channels, out_channels, kernel_size=7, padding=3, padding_mode='replicate')
-        self.norm1 = nn.BatchNorm2d(mid_channels)
-        self.norm2 = nn.BatchNorm2d(out_channels)
+        # Spatial Attention: Conv + BN + Sigmoid
+        self.conv1 = nn.Conv2d(self.in_channels, self.mid_channels, kernel_size=7, padding=3, padding_mode='replicate')
+        self.norm1 = nn.BatchNorm2d(self.mid_channels)
+        self.conv2 = nn.Conv2d(self.mid_channels, self.out_channels, kernel_size=7, padding=3, padding_mode='replicate')
+        self.norm2 = nn.BatchNorm2d(self.out_channels)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         b, c, h, w = x.shape
-
-        # Channel Attention: reshape to (B, H*W, C)
-        x_perm = x.permute(0, 2, 3, 1).view(b, -1, c)
-        x_mlp = self.linear2(self.relu(self.linear1(x_perm)))
-        x_att = x_mlp.view(b, h, w, c).permute(0, 3, 1, 2)
-
-        # Apply channel attention
-        x = x * x_att
+        # Channel Attention
+        x_flat = x.permute(0, 2, 3, 1).reshape(-1, c)  # (B*H*W, C)
+        channel_att = self.linear2(self.relu(self.linear1(x_flat)))
+        channel_att = channel_att.view(b, h, w, c).permute(0, 3, 1, 2)  # (B, C, H, W)
+        x = x * channel_att
 
         # Spatial Attention
-        s_att = self.relu(self.norm1(self.conv1(x)))
-        s_att = self.sigmoid(self.norm2(self.conv2(s_att)))
-
-        # Apply spatial attention
-        out = x * s_att
-        return out
+        spatial_att = self.relu(self.norm1(self.conv1(x)))
+        spatial_att = self.sigmoid(self.norm2(self.conv2(spatial_att)))
+        return x * spatial_att
     
 
 class SPPF(nn.Module):

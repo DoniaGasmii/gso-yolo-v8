@@ -23,6 +23,7 @@ from ultralytics.nn.modules import (
     PSA,
     SPP,
     SPPELAN,
+    GAM,
     SPPF,
     A2C2f,
     AConv,

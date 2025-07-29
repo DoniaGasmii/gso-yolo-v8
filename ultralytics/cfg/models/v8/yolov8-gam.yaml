@@ -26,7 +26,7 @@ backbone:
   - [-1, 6, C2f, [512, True]]
   - [-1, 1, Conv, [1024, 3, 2]] # 7-P5/32
   - [-1, 3, C2f, [1024, True]]  # 8
-  - [-1, 1, GAM, [1024]]   # 9 ← Our GOM inserted here
+  - [-1, 1, GAM, [256, 256]]   # 9 ← Our GOM inserted here
   - [-1, 1, SPPF, [1024, 5]]    # 10 ← SPPF now takes GOM output
 
 # YOLOv8.0n head

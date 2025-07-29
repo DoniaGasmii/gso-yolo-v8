@@ -213,43 +213,59 @@ class SPP(nn.Module):
         x = self.cv1(x)
         return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
 
+import torch
+import torch.nn as nn
+
 class GAM(nn.Module):
     """
-    Global Attention Mechanism (GAM) module adapted for YOLOv8.
-    Works with any input feature map size and channel dimension.
+    Global Attention Mechanism (GAM) from the paper: https://arxiv.org/abs/2112.05561
+    Includes debug prints for use in YOLOv8.
     """
 
     def __init__(self, in_channels, out_channels=None, rate=4):
         super().__init__()
         self.in_channels = int(in_channels)
         self.out_channels = int(out_channels) if out_channels else self.in_channels
-        self.mid_channels = int(self.in_channels // rate)
+        inchannel_rate = int(self.in_channels / rate)
 
-        # Channel Attention: Linear layers (MLP)
-        self.linear1 = nn.Linear(self.in_channels, self.mid_channels)
+        # Channel attention (MLP)
+        self.linear1 = nn.Linear(self.in_channels, inchannel_rate)
         self.relu = nn.ReLU(inplace=True)
-        self.linear2 = nn.Linear(self.mid_channels, self.in_channels)
+        self.linear2 = nn.Linear(inchannel_rate, self.in_channels)
 
-        # Spatial Attention: Conv + BN + Sigmoid
-        self.conv1 = nn.Conv2d(self.in_channels, self.mid_channels, kernel_size=7, padding=3, padding_mode='replicate')
-        self.norm1 = nn.BatchNorm2d(self.mid_channels)
-        self.conv2 = nn.Conv2d(self.mid_channels, self.out_channels, kernel_size=7, padding=3, padding_mode='replicate')
+        # Spatial attention
+        self.conv1 = nn.Conv2d(self.in_channels, inchannel_rate, kernel_size=7, padding=3, padding_mode='replicate')
+        self.norm1 = nn.BatchNorm2d(inchannel_rate)
+
+        self.conv2 = nn.Conv2d(inchannel_rate, self.out_channels, kernel_size=7, padding=3, padding_mode='replicate')
         self.norm2 = nn.BatchNorm2d(self.out_channels)
+
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         b, c, h, w = x.shape
-        # Channel Attention
-        x_flat = x.permute(0, 2, 3, 1).reshape(-1, c)  # (B*H*W, C)
-        channel_att = self.linear2(self.relu(self.linear1(x_flat)))
-        channel_att = channel_att.view(b, h, w, c).permute(0, 3, 1, 2)  # (B, C, H, W)
-        x = x * channel_att
 
-        # Spatial Attention
-        spatial_att = self.relu(self.norm1(self.conv1(x)))
-        spatial_att = self.sigmoid(self.norm2(self.conv2(spatial_att)))
-        return x * spatial_att
-    
+        # --- Channel Attention ---
+        try:
+            x_permute = x.permute(0, 2, 3, 1).contiguous().view(b, -1, c)  # B, H*W, C
+
+            channel_att = self.linear2(self.relu(self.linear1(x_permute)))
+
+            channel_att = channel_att.view(b, h, w, c).permute(0, 3, 1, 2).contiguous()  # B, C, H, W
+        except RuntimeError as e:
+            print(f"[GAM] RuntimeError in Channel Attention: {e}")
+            raise
+
+        x = x * channel_att  # Element-wise channel modulation
+
+        # --- Spatial Attention ---
+        x_spatial_att = self.relu(self.norm1(self.conv1(x)))
+        x_spatial_att = self.sigmoid(self.norm2(self.conv2(x_spatial_att)))
+
+        out = x * x_spatial_att  # Element-wise spatial modulation
+
+        return out
+
 
 class SPPF(nn.Module):
     """Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher."""
